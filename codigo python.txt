@@ -1,0 +1,97 @@
+import sys
+import tkinter as tk
+import cv2
+import numpy as np
+import pygame
+from ultralytics import YOLO
+import threading
+
+model = YOLO("yolo11s.pt")
+
+crib_region = [(475, 350), (1250, 300), (1700, 600), (500, 950)]
+
+cap = cv2.VideoCapture("E:/Pycharm/pythonProject/videos/video.mp4")
+assert cap.isOpened(), "Erro ao abrir o vídeo"
+
+# Parâmetros de vídeo
+w, h, fps = (int(cap.get(x)) for x in (cv2.CAP_PROP_FRAME_WIDTH, cv2.CAP_PROP_FRAME_HEIGHT, cv2.CAP_PROP_FPS))
+video_writer = cv2.VideoWriter("object_counting_output.mp4", cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+
+def is_inside_crib(x1, y1, x2, y2, crib_points):
+    x_coords = [p[0] for p in crib_points]
+    y_coords = [p[1] for p in crib_points]
+    crib_x_min, crib_x_max = min(x_coords), max(x_coords)
+    crib_y_min, crib_y_max = min(y_coords), max(y_coords)
+    return x1 >= crib_x_min and y1 >= crib_y_min and x2 <= crib_x_max and y2 <= crib_y_max
+
+time_outside = 0
+threshold_time = 5
+notified = False
+
+def alert_and_exit():
+    pygame.mixer.init()
+    pygame.mixer.music.load("E:/Pycharm/pythonProject/audio/sound_alert.mp3")
+    pygame.mixer.music.play()
+    pygame.time.delay(2000)
+    sys.exit()
+
+def show_popup():
+    popup = tk.Tk()
+    popup.title("Alerta de Segurança")
+    label = tk.Label(popup, text="Criança detectada fora do berço!", padx=20, pady=20)
+    label.pack()
+    button = tk.Button(popup, text="OK", command=popup.destroy, padx=10, pady=5)
+    button.pack()
+    popup.mainloop()
+
+def notification_thread():
+    global notified
+    if not notified:
+        notified = True
+        show_popup()
+        alert_and_exit()  # Emitir o som e encerrar o programa
+
+while cap.isOpened():
+    success, im0 = cap.read()
+    if not success:
+        print("Video frame is empty or video processing has been successfully completed.")
+        break
+
+    cv2.polylines(im0, [np.array(crib_region)], isClosed=True, color=(255, 0, 0), thickness=2)
+
+    results = model(im0, classes=[0])
+
+    child_inside = False  # Para verificar se a criança está dentro do berço
+
+    for result in results:
+        boxes = result.boxes.xyxy
+        for box in boxes:
+            x1, y1, x2, y2 = map(int, box[:4])
+
+            if is_inside_crib(x1, y1, x2, y2, crib_region):
+                time_outside = 0
+                child_inside = True
+                cv2.rectangle(im0, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(im0, "Criança detectada no berço", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                            (0, 255, 0), 2)
+            else:
+                # Se a criança estiver fora do berço, contar o tempo
+                time_outside += 1 / fps  # Incrementar o tempo fora em segundos
+                cv2.rectangle(im0, (x1, y1), (x2, y2), (0, 0, 255), 2)  # Desenhar caixa vermelha
+                cv2.putText(im0, "Criança fora do berço!", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 170, 170), 1)
+
+                # Verificar se o tempo fora atingiu o limite
+                if time_outside >= threshold_time and not notified:
+                    threading.Thread(target=notification_thread).start()  # Inicia thread para notificação
+
+    if child_inside:
+        notified = False  # Resetar a notificação se a criança voltar ao berço
+
+    video_writer.write(im0)
+    cv2.imshow("Object Counter", im0)
+    if cv2.waitKey(1) & 0xFF == ord("q"):
+        break
+
+cap.release()
+video_writer.release()
+cv2.destroyAllWindows()
